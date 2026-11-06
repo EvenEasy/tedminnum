@@ -1,0 +1,42 @@
+name: checks
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ted_test
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: ted_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ted_test -d ted_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://ted_test:test-only-password@127.0.0.1:5432/ted_test
+      E2E_DATABASE_URL: postgresql+asyncpg://ted_test:test-only-password@127.0.0.1:5432/ted_e2e_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: uv sync --frozen
+        working-directory: backend
+      - run: uv run alembic upgrade head
+        working-directory: backend
+      - run: uv run pytest -q
+        working-directory: backend
+      - run: uv run ruff check src tests migrations && uv run ruff format --check src tests migrations && uv run mypy src
+        working-directory: backend
+      - run: npm ci && npm run typecheck && npm run build && npm run format:check
+        working-directory: frontend
+      - run: PGPASSWORD=test-only-password createdb -h 127.0.0.1 -U ted_test ted_e2e_test
+      - run: npx playwright install --with-deps chromium && npm run test:e2e
+        working-directory: frontend

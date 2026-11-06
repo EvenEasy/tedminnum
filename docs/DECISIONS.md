@@ -1,0 +1,43 @@
+# Implementation decisions
+
+## Architecture and scope
+
+One organization/workspace, one currency, administrator-managed accounts. The domain contains plain Python dataclasses and deterministic money rules. Application services implement workflows through an explicit Store transaction/query port and password-hashing port. Infrastructure owns SQLAlchemy's imperative entity mapping, PostgreSQL-specific constraints/triggers, Argon2id, PDF generation and HTTP delivery. FastAPI handles validation, authentication, serialization and transaction lifetime. React uses the same versioned API. All request mutations commit before their successful response is sent.
+
+Identity, work management, time and billing share one transaction boundary. This deliberately favors explicit workflows over generic repositories and event-framework abstractions. A singleton workspace row serializes financial mutations and membership/rate changes; per-user row locks serialize timer commands. Task updates require a version, and ordering commands normalize positions in one transaction. This is appropriate for a few users, not a high-throughput service. Database exclusion constraints, partial unique indexes, checks, foreign keys and immutability triggers add independent protection. The database-specific logic remains in infrastructure and migrations.
+
+## Authorization
+
+Members need both project membership and task assignment to see or time a task. Project membership permits its project/client metadata, with monetary rates and fixed prices omitted from member responses. Members see their own historical time even if an assignment is later revoked, and may stop an already running personal timer. They can change assigned task status/order and adjust their own unreserved completed time. They cannot create assignments, edit task financial fields, inspect anyone else's time, access invoices/PDFs/reports/audit, or manage integrations. Administrators manage organization data. The last active administrator cannot be disabled or demoted. Removing a project member requires first removing their task assignments.
+
+## Time and focus
+
+The server sets authoritative UTC start/stop/pause timestamps. Each start has a client-generated UUID that becomes the entry ID; retries return the same entry, including after it stops. Commands address that exact entry, so retrying an old stop cannot stop a newer timer. One active entry per user is enforced by a partial unique index. All session intervals, including breaks and pauses, reserve their wall-clock range against overlap. This conservative rule avoids ambiguous double-counting; paused intervals are not separately bookable.
+
+Pause durations retain integer microseconds. Worked seconds round down once after subtracting all paused duration; hourly amounts use these integer seconds. Browser time only renders an approximation between server refreshes. Editing a stopped, unreserved entry replaces its start/end interval, resets pauses, and records the previous and replacement timing/billable state in the audit. The server rejects overlaps and future end times. No client-supplied duration is accepted.
+
+Durations are snapshotted at session start from the user's focus settings. Breaks always remain non-billable. Short/long breaks are chosen manually; reminders never silently stop or bill a session. In-app reminders work while open, plus optional browser notifications if permitted. There is no closed-browser push or automatic four-cycle scheduler. Daily/weekly/monthly filters attribute each complete session to its start date in the browser's local timezone; sessions crossing midnight are not split. The dashboard labels this explicitly. PostgreSQL stores timezone-aware UTC timestamps.
+
+## Billing
+
+Only admins manage money. Supported workspace currencies use two decimal places (USD, EUR, GBP, UAH, CAD, PLN, CHF, AUD). Currency must be selected before creating clients or invoices; no FX, tax or ledger claims.
+
+Hourly rate precedence is task → project → client; an explicit zero overrides the fallback. Fixed-price tasks charge their fixed amount once when completed; all their time is excluded from hourly invoice eligibility and hourly worked estimates. Non-billable tasks never produce charges. Billing mode cannot change after a task has time or invoice history. Rate/price edits affect future selections and current estimates, never saved invoice lines.
+
+An invoice draft selects explicit completed, billable hourly entry IDs and/or completed fixed-task IDs from one client. It immediately reserves those sources using unique partial indexes. Drafts snapshot description, quantity, rate, amount, client name, issuer name and currency; freezing prices at draft creation is stronger than freezing only at issuance. Descriptions alone may change on drafts. Recreate a draft by voiding it if its source selection or price must change.
+
+Amounts calculate with Decimal from integer seconds, rounded half up to cents **per line**. Displayed hours have nine stored decimal places; the authoritative amount uses the original seconds rather than multiplying rounded display hours. Totals sum rounded line amounts. Invoice numbers are sequential under the workspace lock; void history is retained and numbers are not reused.
+
+Lifecycle: draft → issued → partially_paid → paid. Draft or issued invoices without payments may be voided; paid/partially paid invoices cannot be voided. Voiding releases source reservations while preserving historical amounts and lines. A released source can be explicitly rebilled on another invoice. There is no deletion or payment reversal workflow. Draft/void PDFs are marked clearly.
+
+Invoice and payment creation require UUID request keys. Reusing a key with the same intent returns the original record; a different payload conflicts. Payments must be positive, same currency, no later than the current UTC date, and within outstanding balance. Database row locks and a payment trigger protect against concurrent overpayment. Payments and audit history are append-only for the runtime database role.
+
+Worked value and uninvoiced value are **current-rate estimates**, not invoice liabilities. Worked value includes completed hourly work and completed fixed tasks once each. Uninvoiced excludes reserved sources. Draft reserved value is separate. Outstanding uses issued snapshots minus recorded payments; receipts sum recorded payments. These stages must not be summed as independent income.
+
+## Security and operation tradeoffs
+
+Opaque random session tokens are stored only as SHA-256 digests, expire after 12 hours, and are revoked on password/access changes. Cookies are HttpOnly, SameSite=Strict, Secure by default. A per-session CSRF header and exact-origin checks protect mutations. There is no cross-origin CORS allowance. Passwords use Argon2id; password whitespace is preserved. Five failed logins lock an account for five minutes. The deployment uses one API worker; password hashing runs in-process and is tuned for a small user count. Use TLS for connections between devices. A VPN does not substitute for TLS or application authorization.
+
+Webhooks are opt-in, require exact operator-approved HTTPS hostnames, reject private/non-global DNS answers and pin the resolved IP while preserving TLS hostname validation. Redirects and environment HTTP proxies are disabled. Delivery does not read arbitrary response bodies. A transactional outbox with bounded backoff and locked claims avoids sending before commit. Delivery is at least once: receiver-side deduplication is required. Secrets are displayed only on creation/rotation and never included in delivery logs, but remain plaintext in the protected database so the worker can sign requests. Backups and database access therefore require the same care as application secrets.
+
+No automatic demo seed, recovery backdoor, MFA, password-reset email, public signup, background push, external payment provider, or distributed queue. Operator account recovery requires controlled database access. No broad object deletion, archive, refunds, taxes, custom invoice templates, CSV reports or full accounting compliance are implemented. PDF uses ReportLab's built-in fonts, so full international text/font coverage remains limited.

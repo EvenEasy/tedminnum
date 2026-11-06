@@ -1,0 +1,63 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ted
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}
+      MIGRATION_DB_PASSWORD: ${MIGRATION_DB_PASSWORD:?Set MIGRATION_DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ted"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 256m
+    cpus: 1
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ted_owner:${MIGRATION_DB_PASSWORD}@db:5432/ted
+    depends_on:
+      db:
+        condition: service_healthy
+  app:
+    build: .
+    restart: unless-stopped
+    environment: &app-env
+      DATABASE_URL: postgresql+asyncpg://ted_app:${APP_DB_PASSWORD}@db:5432/ted
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8000}
+      SECURE_COOKIES: ${SECURE_COOKIES:-true}
+      WEBHOOK_HOSTS: ${WEBHOOK_HOSTS:-}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    cpus: 1
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "ted.infrastructure.webhooks"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 192m
+    cpus: 0.5
+volumes:
+  pgdata:
