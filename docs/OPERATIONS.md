@@ -29,7 +29,7 @@ For upgrades, back up first, then `docker compose up --build -d`. The one-shot m
 
 ## TLS and sessions
 
-Terminate TLS at an operator-managed reverse proxy, keep the app bound to loopback unless deliberately exposing it on a trusted network interface, set exact `APP_ORIGIN`, and retain `SECURE_COOKIES=true`. The server does not trust forwarded headers. For explicit local HTTP only, set `SECURE_COOKIES=false`. No CORS wildcard is configured. Changing an administrator's role/password revokes all their sessions too; sign in again. The bootstrap CLI works only before any users exist. Operator recovery after losing all admin credentials is a manual, audited database maintenance procedure, not an exposed API.
+Terminate TLS at an operator-managed reverse proxy, keep the app bound to loopback unless deliberately exposing it on a trusted network interface, set exact `APP_ORIGIN`, and retain `SECURE_COOKIES=true`. The server does not trust forwarded headers. For explicit local HTTP only, use the native development launcher or set `APP_ENV=development` and `SECURE_COOKIES=false`; production rejects insecure cookies and development-only origins. No CORS wildcard is configured. Changing an administrator's role/password revokes all their sessions too; sign in again. The bootstrap CLI works only before any users exist. Operator recovery after losing all admin credentials is a manual, audited database maintenance procedure, not an exposed API.
 
 ## Webhooks
 

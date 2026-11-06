@@ -13,8 +13,8 @@ from test_acceptance import draft, key, record
 from ted.domain.models import Delivery, Webhook
 from ted.domain.rules import Problem
 from ted.infrastructure import webhooks
-from ted.infrastructure.config import settings
 from ted.infrastructure.database import sessions
+from ted.infrastructure.runtime import settings
 
 
 async def test_session_revocation_login_lockout_and_cookie_flags(admin, member, work):
@@ -260,3 +260,58 @@ async def test_password_whitespace_and_workspace_counter_privacy(admin, member):
         assert result.status_code == 200
     workspace = (await member.get("/api/v1/settings")).json()["workspace"]
     assert set(workspace) == {"name", "currency"}
+
+
+async def test_concurrent_webhook_rotation_cannot_be_overwritten_by_toggle(admin, monkeypatch):
+    from uuid import UUID
+
+    from ted.infrastructure.persistence.records import WebhookRow
+
+    monkeypatch.setattr(settings, "webhook_hosts", "events.example.test")
+    hook = await post(admin, "/webhooks", {"url": "https://events.example.test/hook"})
+    rotated, toggled = await asyncio.gather(
+        admin.patch(
+            f"/api/v1/webhooks/{hook['id']}", json={"enabled": True, "rotate_secret": True}
+        ),
+        admin.patch(f"/api/v1/webhooks/{hook['id']}", json={"enabled": False}),
+    )
+    assert rotated.status_code == toggled.status_code == 200
+    secret = rotated.json()["secret"]
+    assert secret != hook["secret"]
+    async with sessions() as db:
+        saved = await db.get(WebhookRow, UUID(hook["id"]))
+        assert saved.secret == secret
+
+
+async def test_webhook_update_and_timer_stop_do_not_deadlock_on_audit_fks(admin, monkeypatch):
+    from ted.infrastructure.persistence.identity import SqlIdentityRepository
+    from ted.infrastructure.persistence.integrations import SqlIntegrationsRepository
+
+    monkeypatch.setattr(settings, "webhook_hosts", "events.example.test")
+    hook = await post(admin, "/webhooks", {"url": "https://events.example.test/hook"})
+    entry = await post(admin, "/timer", {"request_key": key()})
+    hook_locked, user_locked = asyncio.Event(), asyncio.Event()
+    get_hook, get_user = SqlIntegrationsRepository.webhook, SqlIdentityRepository.user
+
+    async def locked_hook(self, id, lock=False):
+        result = await get_hook(self, id, lock)
+        hook_locked.set()
+        await asyncio.wait_for(user_locked.wait(), 5)
+        return result
+
+    async def locked_user(self, id, lock=False):
+        result = await get_user(self, id, lock)
+        if lock:
+            user_locked.set()
+        return result
+
+    monkeypatch.setattr(SqlIntegrationsRepository, "webhook", locked_hook)
+    monkeypatch.setattr(SqlIdentityRepository, "user", locked_user)
+    update = asyncio.create_task(
+        admin.patch(f"/api/v1/webhooks/{hook['id']}", json={"enabled": True, "rotate_secret": True})
+    )
+    await asyncio.wait_for(hook_locked.wait(), 5)
+    stopped, updated = await asyncio.wait_for(
+        asyncio.gather(admin.post(f"/api/v1/timer/{entry['id']}/stop"), update), 10
+    )
+    assert stopped.status_code == updated.status_code == 200

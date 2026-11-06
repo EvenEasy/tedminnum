@@ -1,5 +1,7 @@
 # Acceptance evidence and remaining work
 
+This records the original implementation run. See [the refactor verification](REFACTOR.md) for the current architecture, safer test entrypoints and newer test results.
+
 Verification performed on 2026-11-06 with local PostgreSQL 18.6, Python 3.14.3, Node 26.13 and Playwright Chromium. Deployment targets Python 3.12, Node 22 and PostgreSQL 17; the CI workflow declares that combination but has not run on GitHub here. Docker is unavailable in this workspace, so an image build/Compose startup is not claimed.
 
 ## Executed checks

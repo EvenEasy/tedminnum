@@ -31,6 +31,8 @@ services:
     restart: unless-stopped
     environment: &app-env
       DATABASE_URL: postgresql+asyncpg://ted_app:${APP_DB_PASSWORD}@db:5432/ted
+      APP_ENV: ${APP_ENV:-production}
+      DEV_ORIGINS: ${DEV_ORIGINS:-}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8000}
       SECURE_COOKIES: ${SECURE_COOKIES:-true}
       WEBHOOK_HOSTS: ${WEBHOOK_HOSTS:-}

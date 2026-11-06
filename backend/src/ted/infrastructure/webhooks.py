@@ -3,6 +3,7 @@
 import asyncio
 import hmac
 import ipaddress
+import logging
 import socket
 import time
 from datetime import timedelta
@@ -14,8 +15,11 @@ from sqlalchemy import select
 
 from ted.domain.models import Delivery, Webhook, now
 from ted.domain.rules import Problem, require
-from ted.infrastructure.config import settings
-from ted.infrastructure.database import sessions, tables
+from ted.infrastructure.database import engine, sessions
+from ted.infrastructure.persistence.mapping import to_domain
+from ted.infrastructure.persistence.records import DeliveryRow, WebhookRow
+from ted.infrastructure.persistence.schema import tables
+from ted.infrastructure.runtime import settings
 
 
 def validate_url(url: str) -> None:
@@ -79,9 +83,9 @@ async def deliver(hook: Webhook, delivery: Delivery) -> int:
 
 async def tick() -> bool:
     async with sessions() as session, session.begin():
-        c = tables[Delivery].c
+        c = tables[DeliveryRow].c
         delivery = await session.scalar(
-            select(Delivery)
+            select(DeliveryRow)
             .where(c.delivered_at.is_(None), c.attempts < 6, c.next_attempt <= now())
             .order_by(c.next_attempt)
             .with_for_update(skip_locked=True)
@@ -89,12 +93,14 @@ async def tick() -> bool:
         )
         if delivery is None:
             return False
-        hook = await session.get(Webhook, delivery.webhook_id)
+        hook = await session.get(WebhookRow, delivery.webhook_id)
         if hook is None or not hook.enabled:
             delivery.attempts, delivery.status_code = 6, -2
             return True
         try:
-            delivery.status_code = await deliver(hook, delivery)
+            delivery.status_code = await deliver(
+                to_domain(hook, Webhook), to_domain(delivery, Delivery)
+            )
         except Exception:
             # Never log URLs, payloads, secrets, or raw network exceptions.
             delivery.status_code = -1
@@ -109,13 +115,19 @@ async def tick() -> bool:
 
 
 async def main() -> None:
-    while True:
-        try:
-            available = await tick()
-        except Exception:
-            available = False
-        if not available:
-            await asyncio.sleep(2)
+    try:
+        while True:
+            try:
+                available = await tick()
+            except Exception as error:
+                logging.getLogger(__name__).warning(
+                    "Webhook poll failed (%s)", type(error).__name__
+                )
+                available = False
+            if not available:
+                await asyncio.sleep(2)
+    finally:
+        await engine.dispose()
 
 
 if __name__ == "__main__":

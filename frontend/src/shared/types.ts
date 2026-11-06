@@ -130,3 +130,8 @@ export type Editor =
   | { kind: "invoice" }
   | { kind: "user" }
   | { kind: "reset"; item: User };
+
+export type Mutation = (
+  action: () => Promise<unknown>,
+  message?: string,
+) => Promise<boolean>;

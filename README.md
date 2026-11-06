@@ -1,76 +1,110 @@
 # Tedminnum
 
-A self-hosted project, focus-time and billing application. FastAPI + async SQLAlchemy + PostgreSQL, React + TypeScript + Vite. One workspace, a few users, no Redis or external payment service.
+A self-hosted project, focus-time and billing application. FastAPI, async SQLAlchemy, PostgreSQL, React, TypeScript and Vite; one modular monolith for a small workspace.
 
-## Run with Docker Compose
+## Native local development with existing PostgreSQL
 
-1. Copy `.env.example` to `.env`. Generate **three different** passwords with `openssl rand -hex 32` and fill `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, and `MIGRATION_DB_PASSWORD`. Hex passwords avoid URL-escaping mistakes. Keep `.env` private (`chmod 600 .env`).
-2. Set `APP_ORIGIN` to the exact browser origin. For local HTTP at `http://localhost:8000`, explicitly set `SECURE_COOKIES=false`. For HTTPS, leave it `true`. Bind to loopback by default; put your own TLS reverse proxy in front for other devices.
-3. Run:
+Requires Python 3.12+, uv and Node 22+. Use your existing PostgreSQL server through `DATABASE_URL`. No Docker, local PostgreSQL installation, new containers, or infrastructure services are required.
 
-   ```sh
-   docker compose up --build -d
-   docker compose exec app python -m ted.cli admin@example.com --name "Administrator"
+1. Preserve an existing `.env` and its `DATABASE_URL`. If none exists, copy `.env.example` to `.env` at the repository root and set the existing application database URL (URL-encode reserved password characters). The development launcher below supplies process-local development settings without changing your file. If you prefer launching Uvicorn directly, configure this explicit local profile instead:
+
+   ```dotenv
+   DATABASE_URL=postgresql+asyncpg://user:password@existing-host:5432/ted
+   APP_ENV=development
+   APP_ORIGIN=http://localhost:8000
+   DEV_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+   SECURE_COOKIES=false
    ```
 
-   The CLI prompts for the first administrator's password (at least 12 characters). It refuses to run after users exist. There are no shipped application credentials or automatic demo data.
-4. Open `http://localhost:8000`. Create members under Settings, then a client, project with memberships, and tasks with assignees. Members sign in with their administrator-created credentials and can change their own passwords.
+   Keep `.env` private (`chmod 600 .env`). Configuration loads root `.env`, then optional `backend/.env` overrides, then shell environment overrides. This is independent of the command's working directory. Do not put database credentials in frontend environment files. Unused Compose credentials can stay empty.
+2. Start the backend:
 
-Compose uses separate database owner/migration and runtime roles. PostgreSQL is not published on a host port. Application containers run as a non-root user, with a read-only filesystem and dropped capabilities. The worker is the same monolith image running a small database-backed delivery loop; it does not require a message broker. Initial database role creation runs only on a fresh volume. Changing environment passwords on an existing volume does not rotate database roles: use PostgreSQL `ALTER ROLE` through a secure operator session and update `.env` together.
+   ```sh
+   cd backend
+   uv sync --frozen
+   uv run python -m ted.dev --reload
+   ```
 
-API documentation: `/api/docs`; OpenAPI: `/api/openapi.json`; health: `/api/health`. Browser and API use the same origin. API callers first log in, retain the HttpOnly session cookie, and send the returned `csrf` value in `X-CSRF-Token` for mutations. Monetary inputs and responses use decimal strings. Collections accept `limit` (1–200) and `offset`.
+`ted.dev` binds only to loopback, explicitly enables the listed local origins and non-Secure cookies for HTTP, and reuses the existing database URL. It never rewrites `.env`, changes production defaults, migrates, seeds, or starts PostgreSQL. Repeat `--frontend-origin http://host:port` to override its frontend allowlist. For ordinary production/native execution use `uv run uvicorn ted.presentation.api:app --host 127.0.0.1 --port 8000` with your validated environment.
 
-## Local development
+3. Start the frontend in a second terminal:
 
-Use Python 3.12+, uv, Node 22+ and a disposable or development PostgreSQL database with permission to install the trusted `btree_gist` extension. Configure backend environment variables in the shell or `backend/.env`:
+   ```sh
+   cd frontend
+   npm ci
+   npm run dev
+   ```
 
-```sh
-export DATABASE_URL='postgresql+asyncpg://user:password@127.0.0.1:5432/ted_dev'
-export APP_ORIGIN='http://localhost:5173'
-export SECURE_COOKIES=false
-cd backend
-uv sync --frozen
-uv run alembic upgrade head
-uv run python -m ted.cli admin@example.com
-uv run uvicorn ted.presentation.api:app --host 127.0.0.1 --port 8000
-```
+4. Open **http://localhost:5173** or **http://127.0.0.1:5173**. Vite proxies `/api` to `http://127.0.0.1:8000` while preserving the browser's Origin. Port 5173 is strict: an occupied port causes an error instead of silently choosing an unconfigured origin.
 
-In another terminal:
-
-```sh
-cd frontend
-npm ci
-npm run dev
-```
-
-Open `http://localhost:5173`. Vite proxies `/api` to FastAPI. To use the same-origin production build and local documentation assets instead, run `npm run build` in `frontend`, restart FastAPI, and set `APP_ORIGIN=http://localhost:8000`. Run `python -m ted.infrastructure.webhooks` in the backend environment for webhook delivery. Development via Vite does not serve the built documentation assets; use the production build to view `/api/docs`.
-
-## Verification
-
-Backend tests **truncate the configured test database** and refuse names that do not end in `_test`. Create it and migrate it first. For example, with a local PostgreSQL instance:
+Normal startup never creates schemas, migrates, seeds, or truncates a database. For an existing installation, keep its accounts and data. For a fresh **dedicated application database**, or a reviewed upgrade after a backup, explicitly inspect migration state and apply only the intended migrations:
 
 ```sh
 cd backend
-export DATABASE_URL='postgresql+asyncpg://user:password@127.0.0.1:5432/ted_test'
+uv run alembic current
+# Only after confirming DATABASE_URL and reviewing the upgrade:
 uv run alembic upgrade head
-uv run pytest -q
+```
+
+The database must support the existing `btree_gist` extension/constraints. On a fresh dedicated database, its administrator must install the extension or give the migration role the necessary CREATE privilege; the runtime role does not need superuser or schema-creation privileges. This refactor adds no schema migration. If the database has no users, explicitly create the first administrator with `uv run python -m ted.cli admin@example.com`; it prompts for a password and refuses after users exist. Never use test seed scripts on this database.
+
+For webhook delivery, optionally run `uv run python -m ted.infrastructure.webhooks` with the same environment. It uses the existing database; there is no Redis or broker dependency.
+
+## Login troubleshooting and security
+
+`403 {"detail":"Origin rejected"}` means the request was rejected **before credentials or CSRF were checked**. Compare the browser's Network → login request → `Origin` with `APP_ORIGIN` and `DEV_ORIGINS`. Restart the backend after changing configuration. `localhost`, `127.0.0.1`, schemes and ports are different origins; origins must have no path/trailing slash. Vite preserves Origin intentionally. Do not solve this by rewriting Origin, allowing `*`, trusting Host, disabling CSRF, or adding broad CORS.
+
+Production defaults to `APP_ENV=production`, Secure cookies, and one exact `APP_ORIGIN`. Development-only origins and `SECURE_COOKIES=false` require explicit development mode. Non-loopback production origins must use HTTPS. Production deployments must set their actual HTTPS origin and leave `DEV_ORIGINS` empty.
+
+A successful login followed by `401` is a separate session/cookie issue: use one browser hostname consistently and check whether the cookie was accepted. Native HTTP development needs the explicit profile above. Cookies stay HttpOnly and SameSite=Strict. Protected mutations also require the per-session `X-CSRF-Token` returned by login or `/api/v1/auth/me`; a CSRF failure says `CSRF token required`. Invalid credentials return `401`. Logout revokes the server-side session.
+
+The React client centralizes authentication, clears credentials/private state on account changes and session expiry, rejects delayed results from old sessions, and checks the authenticated subject response header to detect cookies changed by another tab. Timers render from authoritative server timestamps and a refreshed server clock offset.
+
+## Architecture and API
+
+- `backend/src/ted/domain`: framework-free domain entities and deterministic money rules.
+- `application`: identity, work management, tracking, billing, integrations and shared access/audit policies. Consumer-owned query/repository ports and constructor injection; no FastAPI, SQLAlchemy or infrastructure imports.
+- `infrastructure/persistence`: separate ORM records, existing schema metadata, row/domain conversion and focused concrete repositories. Repositories flush but never commit.
+- `presentation/routers`: feature-specific HTTP routes. `presentation/dependencies.py` is the manual composition root. The existing explicit outer request transaction still commits before success is sent and rolls back on failure. Each request/job owns a separate session; process shutdown disposes the engine.
+- `frontend/src/main.tsx`: bootstrap only. Feature pages/components/API operations/hooks live under `features`; application composition/loading under `app`; reusable UI, types, theme and API error handling under `shared`.
+
+Public paths, payloads, decimal-string amounts, UUIDs, persisted data and the Alembic chain are preserved. PostgreSQL-specific constraints remain in infrastructure/migrations. See [decisions](docs/DECISIONS.md) and [refactor verification](docs/REFACTOR.md).
+
+API: `/api/v1`; health: `/api/health`; OpenAPI: `/api/openapi.json`. Collections accept `limit` (1–200) and `offset`. For the self-hosted documentation UI, run `npm run build` in `frontend` and serve FastAPI on port 8000; `/api/docs` then uses the built local assets. Vite development alone does not serve those documentation assets.
+
+## Safe verification
+
+Without database configuration, `uv run pytest -q` runs pure/domain/HTTP-auth tests and skips PostgreSQL tests. It never falls back to `DATABASE_URL`. Full integration tests **truncate tables** and require both an explicit `TEST_DATABASE_URL` naming a confirmed disposable database ending `_test` and `ALLOW_DESTRUCTIVE_TESTS=1`. Prepare that disposable database separately; never use a homelab/application database, even if its name happens to end in `_test`.
+
+```sh
+cd backend
 uv run ruff check src tests migrations
 uv run ruff format --check src tests migrations
 uv run mypy src
+uv run pytest -q
+# Only with a separately confirmed disposable, already migrated test database:
+TEST_DATABASE_URL='postgresql+asyncpg://.../ted_test' ALLOW_DESTRUCTIVE_TESTS=1 uv run pytest -q
 cd ../frontend
 npm run typecheck
 npm run build
 npm run format:check
 ```
 
-Browser tests require a **separate**, empty database named `ted_e2e_test`; setup migrates and explicitly seeds test-only credentials. They start and stop their own server on port 8000, which must be free:
+Browser tests also modify data and run migrations/seeding. They require a **separate disposable database named exactly `ted_e2e_test`**, validated before setup/migrations, and start their own native backend/Vite processes on ports 8000/5173:
 
 ```sh
 cd frontend
-export E2E_DATABASE_URL='postgresql+asyncpg://user:password@127.0.0.1:5432/ted_e2e_test'
 npx playwright install chromium
-npm run build
-npm run test:e2e
+E2E_DATABASE_URL='postgresql+asyncpg://.../ted_e2e_test' ALLOW_DESTRUCTIVE_TESTS=1 npm run test:e2e
 ```
 
-See [implementation decisions](docs/DECISIONS.md), [acceptance evidence and limitations](docs/ACCEPTANCE.md), and [backup/restore and webhook operations](docs/OPERATIONS.md).
+## Optional Docker Compose deployment
+
+Native development does not use Compose. For Compose, fill the three separate generated database passwords in `.env`, configure the correct `APP_ENV`, exact browser origin and cookie security, then run:
+
+```sh
+docker compose up --build -d
+docker compose exec app python -m ted.cli admin@example.com
+```
+
+The Compose database is local to that deployment, with separate migration/runtime roles; its database service does not use native `DATABASE_URL`. App containers run without root, with dropped capabilities and read-only filesystems. Compose migrations are an explicit deployment workflow, not part of native startup. See [operations and backup/restore](docs/OPERATIONS.md) and [original acceptance evidence](docs/ACCEPTANCE.md).

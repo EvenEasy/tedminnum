@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { api, setCSRF } from "./api";
-import type { User } from "./types";
-import { formData, text } from "./format";
-import { Field, ErrorMessage } from "./components";
-export function Login({ onLogin }: { onLogin: (user: User) => void }) {
+import { formData, text } from "../../shared/format";
+import { ErrorMessage, Field } from "../../shared/ui";
+import { useAuth } from "./AuthProvider";
+export function Login() {
+  const auth = useAuth();
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   return (
@@ -29,13 +29,7 @@ export function Login({ onLogin }: { onLogin: (user: User) => void }) {
           setBusy(true);
           setError("");
           try {
-            const r = await api<{ user: User; csrf: string }>(
-              "/auth/login",
-              "POST",
-              { email: text(f, "email"), password: text(f, "password") },
-            );
-            setCSRF(r.csrf);
-            onLogin(r.user);
+            await auth.signIn(text(f, "email"), text(f, "password"));
           } catch (e) {
             setError((e as Error).message);
           } finally {

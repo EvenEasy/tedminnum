@@ -16,6 +16,8 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       DATABASE_URL: postgresql+asyncpg://ted_test:test-only-password@127.0.0.1:5432/ted_test
+      TEST_DATABASE_URL: postgresql+asyncpg://ted_test:test-only-password@127.0.0.1:5432/ted_test
+      ALLOW_DESTRUCTIVE_TESTS: "1"
       E2E_DATABASE_URL: postgresql+asyncpg://ted_test:test-only-password@127.0.0.1:5432/ted_e2e_test
     steps:
       - uses: actions/checkout@v4

@@ -6,9 +6,11 @@ from getpass import getpass
 
 from sqlalchemy import select
 
-from ted.domain.models import User, Workspace
-from ted.infrastructure.database import sessions
+from ted.domain.models import User
+from ted.infrastructure.database import engine, sessions
 from ted.infrastructure.passwords import ArgonPasswords
+from ted.infrastructure.persistence.identity import SqlIdentityRepository
+from ted.infrastructure.persistence.records import UserRow, WorkspaceRow
 from ted.presentation.schemas import UserCreate
 
 
@@ -18,10 +20,10 @@ async def bootstrap(email: str, name: str) -> None:
         raise SystemExit("Passwords differ")
     data = UserCreate(email=email.lower(), name=name, password=password, role="admin")
     async with sessions() as session, session.begin():
-        await session.get(Workspace, 1, with_for_update=True)
-        if await session.scalar(select(User).limit(1)):
+        await session.get(WorkspaceRow, 1, with_for_update=True)
+        if await session.scalar(select(UserRow).limit(1)):
             raise SystemExit("Users already exist; use an existing administrator account")
-        session.add(
+        await SqlIdentityRepository(session).save(
             User(
                 email=data.email,
                 name=data.name,
@@ -32,12 +34,19 @@ async def bootstrap(email: str, name: str) -> None:
     print("Administrator created. Sign in through the web application.")
 
 
+async def run(email: str, name: str) -> None:
+    try:
+        await bootstrap(email, name)
+    finally:
+        await engine.dispose()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create the first administrator interactively")
     parser.add_argument("email")
     parser.add_argument("--name", default="Administrator")
     args = parser.parse_args()
-    asyncio.run(bootstrap(args.email, args.name))
+    asyncio.run(run(args.email, args.name))
 
 
 if __name__ == "__main__":

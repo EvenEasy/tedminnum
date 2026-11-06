@@ -1,0 +1,36 @@
+from collections.abc import Sequence
+from typing import Protocol
+from uuid import UUID
+
+from ted.domain.models import (
+    Client,
+    Project,
+    Task,
+    User,
+)
+
+
+class WorkQueries(Protocol):
+    async def client(self, id: UUID) -> Client: ...
+
+    async def clients(self, actor: User) -> Sequence[Client]: ...
+
+    async def project(self, id: UUID) -> Project: ...
+
+    async def projects(self, actor: User) -> Sequence[Project]: ...
+
+    async def members(self, project_id: UUID) -> list[UUID]: ...
+
+    async def task(self, id: UUID, lock: bool = False) -> Task: ...
+
+    async def tasks(self, actor: User) -> Sequence[Task]: ...
+
+    async def assignees(self, task_id: UUID) -> list[UUID]: ...
+
+
+class WorkRepository(WorkQueries, Protocol):
+    async def set_members(self, project_id: UUID, ids: list[UUID]) -> None: ...
+
+    async def set_assignees(self, task_id: UUID, ids: list[UUID]) -> None: ...
+
+    async def save(self, *entities: Client | Project | Task) -> None: ...

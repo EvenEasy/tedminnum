@@ -3,8 +3,10 @@ import asyncio
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from ted.infrastructure.config import settings
-from ted.infrastructure.database import metadata
+from ted.infrastructure.config import DatabaseSettings
+from ted.infrastructure.persistence.schema import metadata
+
+settings = DatabaseSettings()
 
 
 def run(connection):

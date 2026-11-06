@@ -205,6 +205,28 @@ test("admin-managed work → persistent member timer → issued PDF invoice → 
   });
 
   // Shared-browser sign out/sign in must not retain admin totals or projects.
+  let releaseOld: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    releaseOld = resolve;
+  });
+  let seenOld: () => void = () => {};
+  const requested = new Promise<void>((resolve) => {
+    seenOld = resolve;
+  });
+  let intercepted = false;
+  await page.route("**/api/v1/invoices?*", async (route) => {
+    if (intercepted) {
+      await route.continue();
+      return;
+    }
+    intercepted = true;
+    const response = await route.fetch();
+    seenOld();
+    await held;
+    await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "Refresh workspace" }).click();
+  await requested;
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByLabel("Email", { exact: true }).fill("member@e2e.test");
   await page
@@ -217,10 +239,34 @@ test("admin-managed work → persistent member timer → issued PDF invoice → 
   await expect(
     page.getByRole("button", { name: "Reports", exact: true }),
   ).toHaveCount(0);
+  releaseOld();
+  await page.unrouteAll({ behavior: "wait" });
   await expect(page.locator(".finance")).toHaveCount(0);
   await expect(
     page.getByText("Invoice outstanding", { exact: true }),
   ).toHaveCount(0);
+  // Cookies shared by tabs may change accounts without this tab's local auth state changing.
+  const sibling = await page.context().newPage();
+  await sibling.goto("/");
+  // A new tab restores the member first; explicitly sign it out before admin sign-in.
+  await expect(
+    sibling.getByRole("heading", { name: "Hello, Taylor." }),
+  ).toBeVisible();
+  await sibling.getByRole("button", { name: "Sign out" }).click();
+  await sibling.getByLabel("Email", { exact: true }).fill("admin@e2e.test");
+  await sibling
+    .getByLabel("Password", { exact: true })
+    .fill("browser-test-password-123");
+  await sibling.getByRole("button", { name: "Sign in →" }).click();
+  await expect(
+    sibling.getByRole("heading", { name: "Hello, Test." }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Refresh workspace" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back" }),
+  ).toBeVisible();
+  await expect(page.locator(".finance")).toHaveCount(0);
+  await sibling.close();
   await memberContext.close();
   await page.screenshot({
     path: "test-results/desktop-reports.png",

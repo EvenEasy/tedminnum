@@ -1,17 +1,30 @@
 import type React from "react";
-import { api, uid } from "./api";
+import { billingApi } from "../features/billing/api";
+import { InvoiceSources } from "../features/billing/InvoiceSources";
+import { clientApi } from "../features/clients/api";
+import { projectApi } from "../features/projects/api";
+import { settingsApi } from "../features/settings/api";
+import { taskApi } from "../features/tasks/api";
+import { TaskFields } from "../features/tasks/TaskFields";
+import { trackingApi } from "../features/tracking/api";
+import { uid } from "../shared/apiClient";
+import {
+  checked,
+  formData,
+  localInput,
+  nullable,
+  text,
+} from "../shared/format";
 import type {
-  Editor,
   Client,
+  Editor,
+  Entry,
   Project,
   Task,
-  Entry,
   User,
   Workspace,
-} from "./types";
-import { formData, text, nullable, checked, localInput } from "./format";
-import { Modal, Field, ErrorMessage } from "./components";
-import { TaskFields, InvoiceSources } from "./work-forms";
+} from "../shared/types";
+import { ErrorMessage, Field, Modal } from "../shared/ui";
 export function EditorDialog({
   editor,
   error,
@@ -56,12 +69,7 @@ export function EditorDialog({
           if (editor.kind === "client") {
             const data = { name: text(f, "name"), rate: text(f, "rate") };
             ok = await mutate(
-              () =>
-                api(
-                  editor.item ? `/clients/${editor.item.id}` : "/clients",
-                  editor.item ? "PATCH" : "POST",
-                  data,
-                ),
+              () => clientApi.save(editor.item?.id, data),
               "Client saved",
             );
           }
@@ -73,9 +81,8 @@ export function EditorDialog({
             };
             ok = await mutate(
               () =>
-                api(
-                  editor.item ? `/projects/${editor.item.id}` : "/projects",
-                  editor.item ? "PATCH" : "POST",
+                projectApi.save(
+                  editor.item?.id,
                   editor.item
                     ? data
                     : { ...data, client_id: text(f, "client_id") },
@@ -102,9 +109,8 @@ export function EditorDialog({
             };
             ok = await mutate(
               () =>
-                api(
-                  editor.item ? `/tasks/${editor.item.id}` : "/tasks",
-                  editor.item ? "PATCH" : "POST",
+                taskApi.save(
+                  editor.item?.id,
                   editor.item
                     ? { ...data, version: editor.item.version }
                     : { ...data, project_id: text(f, "project_id") },
@@ -115,7 +121,7 @@ export function EditorDialog({
           if (editor.kind === "time") {
             ok = await mutate(
               () =>
-                api(`/time/${editor.item.id}`, "PATCH", {
+                trackingApi.adjust(editor.item.id, {
                   started_at: new Date(text(f, "started_at")).toISOString(),
                   ended_at: new Date(text(f, "ended_at")).toISOString(),
                   billable: checked(f, "billable"),
@@ -127,7 +133,7 @@ export function EditorDialog({
           if (editor.kind === "user") {
             ok = await mutate(
               () =>
-                api("/users", "POST", {
+                settingsApi.createUser({
                   name: text(f, "name"),
                   email: text(f, "email"),
                   password: text(f, "password"),
@@ -139,7 +145,7 @@ export function EditorDialog({
           if (editor.kind === "reset") {
             ok = await mutate(
               () =>
-                api(`/users/${editor.item.id}`, "PATCH", {
+                settingsApi.updateUser(editor.item.id, {
                   role: editor.item.role,
                   active: editor.item.active,
                   password: text(f, "password"),
@@ -150,7 +156,7 @@ export function EditorDialog({
           if (editor.kind === "invoice") {
             ok = await mutate(
               () =>
-                api("/invoices", "POST", {
+                billingApi.draft({
                   client_id: text(f, "client_id"),
                   request_key: invoiceKey.current,
                   entry_ids: f.getAll("entries"),

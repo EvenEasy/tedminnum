@@ -1,7 +1,12 @@
+# ruff: noqa: E402
 import os
+from urllib.parse import urlsplit
 
 # Refuse accidental execution against an operator's real data.
-os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://mechanic@127.0.0.1:55432/ted_test")
+TEST_URL = os.environ.get("TEST_DATABASE_URL", "")
+os.environ["DATABASE_URL"] = TEST_URL or "postgresql+asyncpg://test@db.invalid/disposable_test"
+os.environ["APP_ENV"] = "development"
+os.environ["DEV_ORIGINS"] = ""
 os.environ["SECURE_COOKIES"] = "false"
 os.environ["APP_ORIGIN"] = "http://test"
 
@@ -10,17 +15,22 @@ import pytest
 from sqlalchemy import text
 
 from ted.domain.models import User
-from ted.infrastructure.config import settings
 from ted.infrastructure.database import sessions
 from ted.infrastructure.passwords import ArgonPasswords
+from ted.infrastructure.persistence.identity import SqlIdentityRepository
+from ted.infrastructure.runtime import settings
 from ted.presentation.api import app
 
 HASH = ArgonPasswords().hash("test-password-123")
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 async def clean_database():
-    assert settings.database_url.rsplit("/", 1)[-1].endswith("_test"), (
+    if not TEST_URL or os.environ.get("ALLOW_DESTRUCTIVE_TESTS") != "1":
+        pytest.skip(
+            "Set TEST_DATABASE_URL and ALLOW_DESTRUCTIVE_TESTS=1 for a confirmed disposable database"
+        )
+    assert urlsplit(settings.database_url).path.rsplit("/", 1)[-1].endswith("_test"), (
         "Use a disposable database ending _test"
     )
     async with sessions() as session, session.begin():
@@ -32,11 +42,15 @@ async def clean_database():
         await session.execute(
             text("UPDATE workspace SET currency='USD', name='Test studio', next_invoice=1")
         )
-        session.add(
+        await SqlIdentityRepository(session).save(
             User(email="admin@example.test", name="Admin", role="admin", password_hash=HASH)
         )
-        session.add(User(email="member@example.test", name="Member", password_hash=HASH))
-        session.add(User(email="other@example.test", name="Other", password_hash=HASH))
+        await SqlIdentityRepository(session).save(
+            User(email="member@example.test", name="Member", password_hash=HASH)
+        )
+        await SqlIdentityRepository(session).save(
+            User(email="other@example.test", name="Other", password_hash=HASH)
+        )
     yield
 
 
@@ -51,7 +65,7 @@ async def client_for(email: str) -> httpx.AsyncClient:
 
 
 @pytest.fixture
-async def admin():
+async def admin(clean_database):
     client = await client_for("admin@example.test")
     try:
         yield client
@@ -60,7 +74,7 @@ async def admin():
 
 
 @pytest.fixture
-async def member():
+async def member(clean_database):
     client = await client_for("member@example.test")
     try:
         yield client
@@ -69,7 +83,7 @@ async def member():
 
 
 @pytest.fixture
-async def other():
+async def other(clean_database):
     client = await client_for("other@example.test")
     try:
         yield client
